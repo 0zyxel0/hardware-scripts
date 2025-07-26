@@ -1,0 +1,224 @@
+[
+    {
+        "id": "5f1cf066d0d9298c",
+        "type": "tab",
+        "label": "Flow 3",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "c8ba88d0293fc09f",
+        "type": "serial in",
+        "z": "5f1cf066d0d9298c",
+        "name": "Arduino Serial In",
+        "serial": "8d3278df9e802526",
+        "x": 200,
+        "y": 240,
+        "wires": [
+            [
+                "9d1ac3ee9dcc4e17"
+            ]
+        ]
+    },
+    {
+        "id": "bbdc7538a50b7bf8",
+        "type": "serial out",
+        "z": "5f1cf066d0d9298c",
+        "name": "Arduino Serial Out",
+        "serial": "8d3278df9e802526",
+        "x": 690,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "322342d6d87aa5c5",
+        "type": "debug",
+        "z": "5f1cf066d0d9298c",
+        "name": "Raw Serial Output",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 430,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "9d1ac3ee9dcc4e17",
+        "type": "function",
+        "z": "5f1cf066d0d9298c",
+        "name": "Parse Arduino Output",
+        "func": "const payload = msg.payload.trim();\n\nlet output = {\n    original: payload,\n    type: \"unknown\",\n    message: payload\n};\n\nif (payload.startsWith(\"ARDUINO_STATUS:\")) {\n    output.type = \"arduino_status\";\n    output.message = payload.substring(\"ARDUINO_STATUS:\".length).trim();\n} else if (payload.startsWith(\"ARDUINO_ERROR:\")) {\n    output.type = \"arduino_error\";\n    output.message = payload.substring(\"ARDUINO_ERROR:\".length).trim();\n} else if (payload.startsWith(\"ARDUINO_INFO:\")) {\n    output.type = \"arduino_info\";\n    output.message = payload.substring(\"ARDUINO_INFO:\".length).trim();\n} else if (payload.startsWith(\"ARDUINO_DEBUG:\")) {\n    output.type = \"arduino_debug\";\n    output.message = payload.substring(\"ARDUINO_DEBUG:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_ENROLL_STATUS:\")) {\n    output.type = \"enroll_status\";\n    output.message = payload.substring(\"FINGERPRINT_ENROLL_STATUS:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_ENROLL_ACTION:\")) {\n    output.type = \"enroll_action\";\n    output.message = payload.substring(\"FINGERPRINT_ENROLL_ACTION:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_ENROLL_ERROR:\")) {\n    output.type = \"enroll_error\";\n    output.message = payload.substring(\"FINGERPRINT_ENROLL_ERROR:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_ENROLL_SUCCESS:\")) {\n    output.type = \"enroll_success\";\n    output.message = payload.substring(\"FINGERPRINT_ENROLL_SUCCESS:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_READ_ACTION:\")) {\n    output.type = \"read_action\";\n    output.message = payload.substring(\"FINGERPRINT_READ_ACTION:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_READ_STATUS:\")) {\n    output.type = \"read_status\";\n    output.message = payload.substring(\"FINGERPRINT_READ_STATUS:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_READ_ERROR:\")) {\n    output.type = \"read_error\";\n    output.message = payload.substring(\"FINGERPRINT_READ_ERROR:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_MATCH_SUCCESS:\")) {\n    output.type = \"match_success\";\n    const dataString = payload.substring(\"FINGERPRINT_MATCH_SUCCESS:\".length).trim();\n    const parts = dataString.split(',');\n    let id = -1;\n    let confidence = -1;\n    if (parts.length === 2) {\n        const idPart = parts[0].split('=');\n        const confPart = parts[1].split('=');\n        if (idPart[0] === \"ID\" && confPart[0] === \"Confidence\") {\n            id = parseInt(idPart[1]);\n            confidence = parseInt(confPart[1]);\n        }\n    }\n    output.id = id;\n    output.confidence = confidence;\n    output.message = `Match Found! ID: ${id}, Confidence: ${confidence}`;\n} else if (payload.startsWith(\"FINGERPRINT_MATCH_FAIL:\")) {\n    output.type = \"match_fail\";\n    output.message = payload.substring(\"FINGERPRINT_MATCH_FAIL:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_DELETE_ACTION:\")) {\n    output.type = \"delete_action\";\n    output.message = payload.substring(\"FINGERPRINT_DELETE_ACTION:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_DELETE_SUCCESS:\")) {\n    output.type = \"delete_success\";\n    output.message = payload.substring(\"FINGERPRINT_DELETE_SUCCESS:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_DELETE_ERROR:\")) {\n    output.type = \"delete_error\";\n    output.message = payload.substring(\"FINGERPRINT_DELETE_ERROR:\".length).trim();\n} else if (payload.startsWith(\"FINGERPRINT_COUNT:\")) {\n    output.type = \"fingerprint_count\";\n    output.count = parseInt(payload.substring(\"FINGERPRINT_COUNT:\".length).trim());\n    output.message = `Templates Count: ${output.count}`;\n} else if (payload.startsWith(\"FINGERPRINT_COUNT_ERROR:\")) {\n    output.type = \"fingerprint_count_error\";\n    output.message = payload.substring(\"FINGERPRINT_COUNT_ERROR:\".length).trim();\n}\n\nmsg.payload = output;\nmsg.topic = output.type; // Set topic for routing\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 440,
+        "y": 240,
+        "wires": [
+            [
+                "e4389671f15e0dee"
+            ]
+        ]
+    },
+    {
+        "id": "e4389671f15e0dee",
+        "type": "debug",
+        "z": "5f1cf066d0d9298c",
+        "name": "Parsed Arduino Output",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 720,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "449cd8cf750847b7",
+        "type": "inject",
+        "z": "5f1cf066d0d9298c",
+        "name": "",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "read-user",
+        "payload": "read-user",
+        "payloadType": "str",
+        "x": 370,
+        "y": 320,
+        "wires": [
+            [
+                "bbdc7538a50b7bf8"
+            ]
+        ]
+    },
+    {
+        "id": "b0c8c24cd9c4407d",
+        "type": "inject",
+        "z": "5f1cf066d0d9298c",
+        "name": "",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "user-enroll",
+        "payload": "user-enroll",
+        "payloadType": "str",
+        "x": 380,
+        "y": 380,
+        "wires": [
+            [
+                "bbdc7538a50b7bf8"
+            ]
+        ]
+    },
+    {
+        "id": "8eaf5905a56ebb08",
+        "type": "inject",
+        "z": "5f1cf066d0d9298c",
+        "name": "",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "delete-user",
+        "payload": "delete-user 1",
+        "payloadType": "str",
+        "x": 390,
+        "y": 440,
+        "wires": [
+            [
+                "bbdc7538a50b7bf8"
+            ]
+        ]
+    },
+    {
+        "id": "7705f36e0142331a",
+        "type": "inject",
+        "z": "5f1cf066d0d9298c",
+        "name": "",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "get-count",
+        "payload": "get-count",
+        "payloadType": "str",
+        "x": 370,
+        "y": 500,
+        "wires": [
+            [
+                "bbdc7538a50b7bf8"
+            ]
+        ]
+    },
+    {
+        "id": "8d3278df9e802526",
+        "type": "serial-port",
+        "name": "",
+        "serialport": "/dev/ttyACM1",
+        "serialbaud": "9600",
+        "databits": "8",
+        "parity": "none",
+        "stopbits": "1",
+        "waitfor": "",
+        "dtr": "none",
+        "rts": "none",
+        "cts": "none",
+        "dsr": "none",
+        "newline": "\\n",
+        "bin": "false",
+        "out": "char",
+        "addchar": "",
+        "responsetimeout": ""
+    }
+]

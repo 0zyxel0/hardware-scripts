@@ -1,3 +1,4 @@
+// #include <ArduinoJson.h> // <-- REMOVED: No longer needed, saving memory.
 #include <Adafruit_Fingerprint.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -29,13 +30,12 @@ const long operationTimeout = 10000;
 const long removeFingerDelay = 2000;
 int enrollId = -1;
 
-// --- Function Prototypes ---
+// --- Function Prototypes (Updated) ---
 void sendBleNotification(const String& message);
-void sendShortcodeResponse(StatusCode status, MessageCode message);
-void sendShortcodeResponse(StatusCode status, MessageCode message, int dataValue);
+void sendShortcodeResponse(StatusCode status, MessageCode message, int dataValue = 0); // <-- MODIFIED: Added default value
 void startEnrollment();
 
-// --- Callbacks (No changes) ---
+// --- Callbacks (Updated to use new function) ---
 class MyServerCallbacks: public BLEServerCallbacks { void onConnect(BLEServer* pServer) { deviceConnected = true; Serial.println("Device connected"); } void onDisconnect(BLEServer* pServer) { deviceConnected = false; currentState = IDLE; Serial.println("Device disconnected - advertising again"); BLEDevice::startAdvertising(); } };
 class MyCharacteristicCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
@@ -57,7 +57,7 @@ class MyCharacteristicCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
-// --- setup() and loop() (No significant changes) ---
+// --- setup() and loop() (Updated to use new function) ---
 void setup() { Serial.begin(115200); Serial.println("Starting..."); FINGERPRINT_SERIAL.begin(57600, SERIAL_8N1, 16, 17); if (!finger.verifyPassword()) { while (1) delay(1); } finger.getTemplateCount(); BLEDevice::init("ESP32_Fingerprint_Scanner"); pServer = BLEDevice::createServer(); pServer->setCallbacks(new MyServerCallbacks()); BLEService *pService = pServer->createService(SERVICE_UUID); pCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY); pCharacteristic->setCallbacks(new MyCharacteristicCallbacks()); pCharacteristic->addDescriptor(new BLE2902()); pService->start(); BLEAdvertising *pAdvertising = BLEDevice::getAdvertising(); pAdvertising->addServiceUUID(SERVICE_UUID); pAdvertising->setScanResponse(true); BLEDevice::startAdvertising(); sendShortcodeResponse(S_READY, M_DEVICE_READY); }
 void loop() { if (!deviceConnected) { delay(500); return; } switch (currentState) { case IDLE: break; case WAITING_FOR_CHECK: handleCheckFinger(); break; case ENROLL_START: startEnrollment(); break; case ENROLL_STEP_1: case ENROLL_STEP_2: handleEnrollment(); break; case ENROLL_WAIT_FOR_REMOVE: if (millis() - operationStartTime >= removeFingerDelay) { sendShortcodeResponse(S_PROMPT, M_PLACE_AGAIN); currentState = ENROLL_STEP_2; operationStartTime = millis(); } break; } if (currentState != IDLE && currentState != ENROLL_WAIT_FOR_REMOVE && (millis() - operationStartTime > operationTimeout)) { sendShortcodeResponse(S_ERROR, M_ERR_TIMEOUT); currentState = IDLE; } }
 
@@ -71,20 +71,18 @@ void sendBleNotification(const String& message) {
   }
 }
 
-// --- MODIFIED: Replaced JSON functions with Shortcode functions ---
-void sendShortcodeResponse(StatusCode status, MessageCode message) {
-  // Call the main function with a default data value of 0
-  sendShortcodeResponse(status, message, 0);
-}
-
+// --- MODIFIED: Replaced ALL JSON functions with this single, efficient Shortcode function ---
 void sendShortcodeResponse(StatusCode status, MessageCode message, int dataValue) {
-  // Create a fixed-size character buffer
-  char buffer[8]; // 7 characters + null terminator
+  // Create a fixed-size character buffer. 
+  // It MUST be size 8 (7 characters for data + 1 for the null terminator '\0').
+  char buffer[8]; 
 
-  // Format the string with leading zeros: SSMMIII
-  sprintf(buffer, "%02d%02d%03d", status, message, dataValue);
+  // Use sprintf to format the integers into the buffer with zero-padding.
+  // %02d = pad integer with leading zeros to 2 digits.
+  // %03d = pad integer with leading zeros to 3 digits.
+  sprintf(buffer, "%02d%02d%03d", (int)status, (int)message, dataValue);
   
-  // Send the resulting string
+  // Convert the C-style char buffer to an Arduino String object and send it.
   sendBleNotification(String(buffer));
 }
 
