@@ -129,7 +129,7 @@ void setup()
       delay(1);
   }
   finger.getTemplateCount();
-  BLEDevice::init("ESP32_Fingerprint_Scanner");
+  BLEDevice::init("SC_Finger_Reader");
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEService *pService = pServer->createService(SERVICE_UUID);
