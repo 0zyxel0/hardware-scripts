@@ -1,0 +1,399 @@
+//
+// Copyright (c) 2025 Scribble Cubes . All rights reserved.
+//
+//
+// ESP32 application to connect to a WiFi network, provision credentials via a
+// web interface, and send sensor data to/receive commands from ThingsBoard via MQTT.
+//
+// Features:
+// - On first boot, creates a WiFi Access Point (AP) named "ESP32-Config".
+// - Hosts a web server at 192.168.4.1 for WiFi configuration.
+// - Saves WiFi credentials to non-volatile storage (EEPROM).
+// - After configuration, connects to the specified WiFi and ThingsBoard MQTT broker.
+// - Periodically sends DHT11 sensor data.
+// - Supports RPC (Remote Procedure Call) from ThingsBoard to:
+//    - Turn an LED on/off (`setLedStatus`).
+//    - Request sensor data on-demand (`getSensorValues`).
+//    - Reset WiFi credentials and restart (`resetWifiCredentials`).
+//    - Get LED status (`getLedStatus`).
+//
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <EEPROM.h>
+#include <DHT.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// --- Pin Definitions ---
+const int DHT_PIN = 18; // D18
+const int LED_PIN = 14; // D14
+
+// --- Sensor Type ---
+#define DHTTYPE DHT11
+
+// --- ThingsBoard Configuration ---
+// Replace with your ThingsBoard server address and device access token
+const char* THINGSBOARD_SERVER = "thingsboard.cloud";
+const int THINGSBOARD_PORT = 1883; // Default MQTT port
+const char* ACCESS_TOKEN = "YOUR_TOKEN_HERE";
+
+// --- EEPROM Configuration ---
+#define EEPROM_SIZE 128 // SSID (32) + Password (64) + flags
+
+// --- Global Variables ---
+WebServer server(80);
+DHT dht(DHT_PIN, DHTTYPE);
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+
+String ssid = "";
+String password = "";
+
+unsigned long lastSend = 0;
+
+// --- Web Page HTML with Tailwind CSS (for AP mode) ---
+// Note: This HTML page is served when the ESP32 is in AP mode for WiFi configuration.
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 WiFi Setup</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans flex items-center justify-center min-h-screen">
+    <div class="w-full max-w-md bg-white rounded-lg shadow-xl p-8 m-4">
+        <h2 class="text-3xl font-bold text-center text-gray-800 mb-2">ESP32 Setup</h2>
+        <p class="text-center text-gray-600 mb-8">Configure your WiFi network to connect to ThingsBoard.</p>
+        <form action="/save" method="POST">
+            <div class="mb-5">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="ssid">
+                    WiFi SSID
+                </label>
+                <input class="shadow-sm appearance-none border rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="ssid" name="ssid" type="text" placeholder="Enter your WiFi network name" required>
+            </div>
+            <div class="mb-6">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="password">
+                    Password
+                </label>
+                <input class="shadow-sm appearance-none border rounded-lg w-full py-3 px-4 text-gray-700 mb-3 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="password" name="password" type="password" placeholder="Enter your WiFi password">
+            </div>
+            <div class="flex items-center justify-center">
+                <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition-transform transform hover:scale-105" type="submit">
+                    Save and Connect
+                </button>
+            </div>
+        </form>
+    </div>
+</body>
+</html>
+)rawliteral";
+
+// --- Function Prototypes ---
+void setupAP();
+void handleRoot();
+void handleSave();
+void saveWiFiCredentials();
+void clearWiFiCredentials(); // New prototype
+bool readWiFiCredentials();
+void reconnectMqtt();
+void onMqttMessage(char* topic, byte* payload, unsigned int length);
+void sendTelemetry(float temperature, float humidity);
+
+void setup() {
+    Serial.begin(115200);
+    EEPROM.begin(EEPROM_SIZE);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW); // Ensure LED is off initially
+    dht.begin();
+
+    // Attempt to read WiFi credentials from EEPROM
+    if (readWiFiCredentials()) {
+        Serial.print("Connecting to WiFi network: ");
+        Serial.println(ssid);
+        WiFi.begin(ssid.c_str(), password.c_str());
+        Serial.print("Connecting to WiFi");
+        int attempts = 0;
+        // Wait for WiFi connection, with a timeout
+        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+            delay(500);
+            Serial.print(".");
+            attempts++;
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nConnected to WiFi!");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
+            // Configure MQTT client once WiFi is connected
+            mqttClient.setServer(THINGSBOARD_SERVER, THINGSBOARD_PORT);
+            mqttClient.setCallback(onMqttMessage);
+        } else {
+            Serial.println("\nFailed to connect to saved WiFi. Starting AP mode for configuration.");
+            // If connection fails, switch to Access Point mode
+            setupAP();
+        }
+    } else {
+        Serial.println("No WiFi credentials found. Starting AP mode for configuration.");
+        // If no credentials are saved, start Access Point mode
+        setupAP();
+    }
+}
+
+void loop() {
+    // If in AP mode, handle web server clients
+    if (WiFi.getMode() == WIFI_AP) {
+        server.handleClient();
+    } else if (WiFi.status() == WL_CONNECTED) {
+        // If connected to WiFi, ensure MQTT connection is active
+        if (!mqttClient.connected()) {
+            reconnectMqtt();
+        }
+        mqttClient.loop(); // Process incoming MQTT messages and maintain connection
+
+        // Send sensor data periodically
+        if (millis() - lastSend > 30000) { // Send data every 30 seconds
+            float humidity = dht.readHumidity();
+            float temperature = dht.readTemperature();
+
+            if (!isnan(humidity) && !isnan(temperature)) {
+                Serial.println("Sending periodic telemetry...");
+                sendTelemetry(temperature, humidity);
+            } else {
+                Serial.println("Failed to read from DHT sensor!");
+            }
+            lastSend = millis();
+        }
+    } else {
+        Serial.println("WiFi connection lost. Attempting to reconnect or restart.");
+        // If WiFi is disconnected in STA mode, try to reconnect or consider restarting
+        delay(5000); // Wait before retrying or restarting
+        // You might want to add more robust reconnection logic here,
+        // or a counter to switch back to AP mode after multiple failed attempts.
+        // For now, it will keep printing the message.
+        WiFi.begin(ssid.c_str(), password.c_c_str()); // Attempt to reconnect
+    }
+}
+
+/**
+ * @brief Handles incoming MQTT messages (RPC).
+ * This function processes remote procedure calls from ThingsBoard.
+ */
+void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+    Serial.println("---");
+    Serial.print("Message arrived on topic: ");
+    Serial.println(topic);
+
+    // Decode JSON payload for RPC command
+    StaticJsonDocument<256> doc;
+    deserializeJson(doc, payload, length);
+    const char* method = doc["method"];
+    Serial.print("Method: ");
+    Serial.println(method);
+
+    // Extract request ID to respond to the correct RPC request
+    String requestId = String(topic).substring(String(topic).lastIndexOf('/') + 1);
+
+    // Handle 'setLedStatus' RPC command
+    if (strcmp(method, "setLedStatus") == 0) {
+        bool status = doc["params"]; // Get the boolean parameter for LED status
+        Serial.print("Setting LED status to: ");
+        Serial.println(status ? "ON" : "OFF");
+        digitalWrite(LED_PIN, status ? HIGH : LOW); // Set LED state
+
+        // Optional: send LED state back as telemetry to ThingsBoard
+        String responsePayload = "{\"led_status\":";
+        responsePayload += status ? "true" : "false";
+        responsePayload += "}";
+        mqttClient.publish("v1/devices/me/telemetry", responsePayload.c_str());
+
+    // Handle 'getSensorValues' RPC command
+    } else if (strcmp(method, "getSensorValues") == 0) {
+        Serial.println("Received on-demand sensor value request.");
+        float humidity = dht.readHumidity();
+        float temperature = dht.readTemperature();
+
+        if (!isnan(humidity) && !isnan(temperature)) {
+            // Create JSON response for sensor values
+            StaticJsonDocument<100> responseDoc;
+            responseDoc["temperature"] = temperature;
+            responseDoc["humidity"] = humidity;
+            
+            char responsePayload[100];
+            serializeJson(responseDoc, responsePayload);
+
+            // Publish response to the RPC response topic
+            String responseTopic = "v1/devices/me/rpc/response/" + requestId;
+            mqttClient.publish(responseTopic.c_str(), responsePayload);
+            Serial.println("Sent on-demand sensor values.");
+        } else {
+            Serial.println("Failed to read DHT sensor for on-demand request.");
+        }
+    }
+    // New RPC method: 'getLedStatus'
+    else if (strcmp(method, "getLedStatus") == 0) {
+        Serial.println("Received request for LED status.");
+        bool currentLedStatus = digitalRead(LED_PIN); // Read the current LED state
+
+        // Create JSON response
+        StaticJsonDocument<50> responseDoc;
+        responseDoc["led_status"] = currentLedStatus;
+
+        char responsePayload[50];
+        serializeJson(responseDoc, responsePayload);
+
+        // Publish response to the RPC response topic
+        String responseTopic = "v1/devices/me/rpc/response/" + requestId;
+        mqttClient.publish(responseTopic.c_str(), responsePayload);
+        Serial.print("Sent LED status: ");
+        Serial.println(currentLedStatus ? "ON" : "OFF");
+    }
+    // New RPC method: 'resetWifiCredentials'
+    else if (strcmp(method, "resetWifiCredentials") == 0) {
+        Serial.println("Received request to reset WiFi credentials.");
+        Serial.println("Clearing EEPROM and restarting...");
+        clearWiFiCredentials(); // Clear saved credentials
+        // Send a success response back to ThingsBoard if desired, then restart
+        String responseTopic = "v1/devices/me/rpc/response/" + requestId;
+        mqttClient.publish(responseTopic.c_str(), "{\"status\":\"WiFi credentials cleared, restarting...\"}");
+        delay(1000); // Give time for message to send
+        ESP.restart(); // Restart the ESP32
+    }
+    Serial.println("---");
+}
+
+/**
+ * @brief Connects/reconnects to the ThingsBoard MQTT broker.
+ */
+void reconnectMqtt() {
+    while (!mqttClient.connected()) {
+        Serial.print("Attempting MQTT connection...");
+        // Attempt to connect with a client ID and access token
+        if (mqttClient.connect("ESP32-Device", ACCESS_TOKEN, NULL)) {
+            Serial.println("connected");
+            digitalWrite(LED_PIN, HIGH); // Turn LED on to indicate MQTT connection
+            // Subscribe to the RPC request topic for incoming commands
+            mqttClient.subscribe("v1/devices/me/rpc/request/+");
+            Serial.println("Subscribed to RPC topic");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state()); // Print the MQTT connection state
+            Serial.println(" try again in 5 seconds");
+            digitalWrite(LED_PIN, LOW); // Turn LED off if connection fails
+            delay(5000); // Wait before retrying
+        }
+    }
+}
+
+/**
+ * @brief Sends sensor data as telemetry to ThingsBoard via MQTT.
+ */
+void sendTelemetry(float temperature, float humidity) {
+    if (mqttClient.connected()) {
+        // Create JSON payload for telemetry data
+        StaticJsonDocument<100> jsonDoc;
+        jsonDoc["temperature"] = temperature;
+        jsonDoc["humidity"] = humidity;
+        
+        char payload[100];
+        serializeJson(jsonDoc, payload);
+
+        // Publish to telemetry topic
+        if (mqttClient.publish("v1/devices/me/telemetry", payload)) {
+            Serial.print("Telemetry sent: ");
+            Serial.println(payload);
+        } else {
+            Serial.println("Failed to send telemetry.");
+        }
+    }
+}
+
+// --- WiFi AP and Configuration Functions ---
+
+/**
+ * @brief Sets up the ESP32 as an Access Point (AP) for configuration.
+ */
+void setupAP() {
+    // Start the Access Point with a specified SSID
+    WiFi.softAP("SC_Smart_Temperature");
+    IPAddress myIP = WiFi.softAPIP(); // Get the IP address of the AP
+    Serial.print("AP IP address: ");
+    Serial.println(myIP);
+    // Set up web server routes
+    server.on("/", HTTP_GET, handleRoot); // Serve the main configuration page
+    server.on("/save", HTTP_POST, handleSave); // Handle saving of WiFi credentials
+    server.begin(); // Start the web server
+    Serial.println("HTTP server started");
+}
+
+/**
+ * @brief Handles requests to the root path ("/") of the web server.
+ * Serves the HTML configuration page.
+ */
+void handleRoot() {
+    server.send(200, "text/html", htmlPage);
+}
+
+/**
+ * @brief Handles saving of WiFi credentials submitted via the web form.
+ */
+void handleSave() {
+    // Get SSID and password from the submitted form
+    ssid = server.arg("ssid");
+    password = server.arg("password");
+    Serial.println("Received WiFi credentials. Saving and restarting...");
+    saveWiFiCredentials(); // Save credentials to EEPROM
+    // Send a response to the client indicating success and instructing to restart
+    String response = "<html><body style='font-family: Arial, sans-serif; text-align: center; margin-top: 50px;'>"
+                      "<h1>Credentials Saved!</h1>"
+                      "<p>The ESP32 will now restart and try to connect to your WiFi.</p>"
+                      "</body></html>";
+    server.send(200, "text/html", response);
+    delay(2000); // Give time for the response to be sent
+    ESP.restart(); // Restart the ESP32 to connect with new credentials
+}
+
+/**
+ * @brief Saves the current SSID and password to EEPROM.
+ */
+void saveWiFiCredentials() {
+    // Clear the EEPROM section first to ensure old data is removed
+    for (int i = 0; i < EEPROM_SIZE; i++) { EEPROM.write(i, 0); }
+    // Write SSID starting at address 0
+    EEPROM.writeString(0, ssid);
+    // Write Password starting at address 32 (after SSID)
+    EEPROM.writeString(32, password);
+    EEPROM.commit(); // Commit changes to EEPROM
+    Serial.println("WiFi credentials saved to EEPROM.");
+}
+
+/**
+ * @brief Clears the WiFi credentials stored in EEPROM.
+ */
+void clearWiFiCredentials() {
+    // Overwrite the SSID and password sections with zeros
+    for (int i = 0; i < EEPROM_SIZE; i++) {
+        EEPROM.write(i, 0);
+    }
+    EEPROM.commit(); // Commit changes to EEPROM
+    Serial.println("WiFi credentials cleared from EEPROM.");
+}
+
+/**
+ * @brief Reads WiFi credentials from EEPROM.
+ * @return True if credentials were found (SSID has length > 0), false otherwise.
+ */
+bool readWiFiCredentials() {
+    // Read SSID from address 0
+    ssid = EEPROM.readString(0);
+    // Read Password from address 32
+    password = EEPROM.readString(32);
+    Serial.print("Read SSID: ");
+    Serial.println(ssid);
+    Serial.print("Read Password: ");
+    Serial.println(password);
+    return ssid.length() > 0; // Return true if an SSID was successfully read
+}
+
