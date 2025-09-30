@@ -1,4 +1,4 @@
-// --- ADDED LIBRARIES for OLED ---
+// LIBRARIES for OLED ---
 #include <Wire.h>
 #include <U8g2lib.h>
 
@@ -8,6 +8,9 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+
+// --- Buzzer Pin Definition ---
+#define BUZZER_PIN 4 // GPIO pin connected to the active buzzer
 
 // --- OLED Display Initialization ---
 // This constructor is for a 128x64 I2C OLED display.
@@ -69,6 +72,13 @@ const long operationTimeout = 10000;
 const long removeFingerDelay = 2000;
 int enrollId = -1;
 
+// --- Buzzer Helper Function ---
+void triggerBeep() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(1000); // Beep for 100 milliseconds
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
 // --- OLED Helper Function ---
 // A simple function to display one or two lines of text on the OLED
 void showOledMessage(const char *line1, const char *line2 = "") {
@@ -94,7 +104,11 @@ class MyServerCallbacks : public BLEServerCallbacks
   {
     deviceConnected = true;
     Serial.println("Device connected");
+    showOledMessage("Connecting..."); // Update OLED
+    delay(1000);
     showOledMessage("Connected!"); // Update OLED
+    delay(1500);
+    showOledMessage("Device Ready");
   }
   void onDisconnect(BLEServer *pServer)
   {
@@ -149,10 +163,14 @@ void setup()
 {
   Serial.begin(115200);
 
+  // --- BUZZER INITIALIZATION ---
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW); // Make sure buzzer is off initially
+
   // --- OLED INITIALIZATION ---
   u8g2.begin();
-  showOledMessage("Starting..."); // <-- SHOW STARTUP MESSAGE
-  delay(1000); // Optional: wait a moment so the message can be read
+  showOledMessage("Booting..."); // <-- SHOW STARTUP MESSAGE
+  delay(1500); // Optional: wait a moment so the message can be read
 
   Serial.println("Starting...");
   FINGERPRINT_SERIAL.begin(57600, SERIAL_8N1, 16, 17);
@@ -177,12 +195,13 @@ void setup()
   BLEDevice::startAdvertising();
   sendShortcodeResponse(S_READY, M_DEVICE_READY);
   
-  showOledMessage("Ready to Scan"); // <-- SHOW READY MESSAGE
+  showOledMessage("Device Ready"); // <-- SHOW READY MESSAGE
 }
 void loop()
 {
   if (!deviceConnected)
   {
+    // If not connected, we just wait. The onConnect callback will handle the screen update.
     delay(500);
     return;
   }
@@ -216,7 +235,7 @@ void loop()
     showOledMessage("Timeout!", "Please retry."); // Update OLED
     currentState = IDLE;
     delay(2000);
-    showOledMessage("Ready to Scan");
+    showOledMessage("Device Ready");
   }
 }
 
@@ -243,13 +262,17 @@ void handleCheckFinger()
 {
   if (finger.getImage() != FINGERPRINT_OK)
     return;
+
+  // --- TRIGGER BEEP ON SCAN ---
+  triggerBeep();
+
   if (finger.image2Tz() != FINGERPRINT_OK)
   {
     sendShortcodeResponse(S_ERROR, M_ERR_IMAGE_PROCESS);
     showOledMessage("Error", "Try again");
     currentState = IDLE;
     delay(2000);
-    showOledMessage("Ready to Scan");
+    showOledMessage("Device Ready");
     return;
   }
   if (finger.fingerSearch() == FINGERPRINT_OK)
@@ -264,7 +287,7 @@ void handleCheckFinger()
   }
   currentState = IDLE;
   delay(2000); // Wait so user can see the message
-  showOledMessage("Ready to Scan");
+  showOledMessage("Device Ready");
 }
 
 void startEnrollment()
@@ -276,7 +299,7 @@ void startEnrollment()
     showOledMessage("Database Full");
     currentState = IDLE;
     delay(2000);
-    showOledMessage("Ready to Scan");
+    showOledMessage("Device Ready");
     return;
   }
   enrollId = finger.templateCount + 1;
@@ -290,13 +313,17 @@ void handleEnrollment()
 {
   if (finger.getImage() != FINGERPRINT_OK)
     return;
+
+  // --- TRIGGER BEEP ON SCAN ---
+  triggerBeep();
+  
   if (finger.image2Tz(currentState == ENROLL_STEP_1 ? 1 : 2) != FINGERPRINT_OK)
   {
     sendShortcodeResponse(S_ERROR, M_ERR_IMAGE_PROCESS);
     showOledMessage("Error", "Try Again");
     currentState = IDLE;
     delay(2000);
-    showOledMessage("Ready to Scan");
+    showOledMessage("Device Ready");
     return;
   }
   if (currentState == ENROLL_STEP_1)
@@ -326,7 +353,7 @@ void handleEnrollment()
     }
     currentState = IDLE;
     delay(2000);
-    showOledMessage("Ready to Scan");
+    showOledMessage("Device Ready");
   }
 }
 
@@ -348,5 +375,5 @@ void handleFactoryReset()
     Serial.println("Failed to clear database.");
   }
   delay(2000);
-  showOledMessage("Ready to Scan");
+  showOledMessage("Device Ready");
 }
