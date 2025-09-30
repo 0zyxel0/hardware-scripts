@@ -1,9 +1,20 @@
-// #include <ArduinoJson.h> // <-- REMOVED: No longer needed, saving memory.
+// --- ADDED LIBRARIES for OLED ---
+#include <Wire.h>
+#include <U8g2lib.h>
+
+// --- Original Libraries ---
 #include <Adafruit_Fingerprint.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+
+// --- OLED Display Initialization ---
+// This constructor is for a 128x64 I2C OLED display.
+// Make sure your connections are:
+// GND -> GND, VCC -> 3.3V, SCL -> GPIO 22, SDA -> GPIO 21
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
 
 // --- Communication Protocol Definition (Enums are kept for readability) ---
 enum StatusCode
@@ -58,6 +69,18 @@ const long operationTimeout = 10000;
 const long removeFingerDelay = 2000;
 int enrollId = -1;
 
+// --- OLED Helper Function ---
+// A simple function to display one or two lines of text on the OLED
+void showOledMessage(const char *line1, const char *line2 = "") {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB10_tr); // Set a readable font
+  u8g2.drawStr(0, 15, line1);        // Draw the first line
+  if (strlen(line2) > 0) {
+    u8g2.drawStr(0, 40, line2);     // Draw the second line if it exists
+  }
+  u8g2.sendBuffer(); // Send the content to the display
+}
+
 // --- Function Prototypes ---
 void sendBleNotification(const String &message);
 void sendShortcodeResponse(StatusCode status, MessageCode message, int dataValue = 0);
@@ -71,12 +94,14 @@ class MyServerCallbacks : public BLEServerCallbacks
   {
     deviceConnected = true;
     Serial.println("Device connected");
+    showOledMessage("Connected!"); // Update OLED
   }
   void onDisconnect(BLEServer *pServer)
   {
     deviceConnected = false;
     currentState = IDLE;
     Serial.println("Device disconnected - advertising again");
+    showOledMessage("Disconnected", "Advertising..."); // Update OLED
     BLEDevice::startAdvertising();
   }
 };
@@ -96,6 +121,7 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
           currentState = WAITING_FOR_CHECK;
           operationStartTime = millis();
           sendShortcodeResponse(S_PROMPT, M_PLACE_FINGER);
+          showOledMessage("Place Finger"); // Update OLED
         }
         else if (value == "enroll-user")
         {
@@ -122,10 +148,17 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
 void setup()
 {
   Serial.begin(115200);
+
+  // --- OLED INITIALIZATION ---
+  u8g2.begin();
+  showOledMessage("Starting..."); // <-- SHOW STARTUP MESSAGE
+  delay(1000); // Optional: wait a moment so the message can be read
+
   Serial.println("Starting...");
   FINGERPRINT_SERIAL.begin(57600, SERIAL_8N1, 16, 17);
   if (!finger.verifyPassword())
   {
+    showOledMessage("Fingerprint", "Sensor Error!"); // Show error on display
     while (1)
       delay(1);
   }
@@ -143,6 +176,8 @@ void setup()
   pAdvertising->setScanResponse(true);
   BLEDevice::startAdvertising();
   sendShortcodeResponse(S_READY, M_DEVICE_READY);
+  
+  showOledMessage("Ready to Scan"); // <-- SHOW READY MESSAGE
 }
 void loop()
 {
@@ -169,6 +204,7 @@ void loop()
     if (millis() - operationStartTime >= removeFingerDelay)
     {
       sendShortcodeResponse(S_PROMPT, M_PLACE_AGAIN);
+      showOledMessage("Place Again"); // Update OLED
       currentState = ENROLL_STEP_2;
       operationStartTime = millis();
     }
@@ -177,7 +213,10 @@ void loop()
   if (currentState != IDLE && currentState != ENROLL_WAIT_FOR_REMOVE && (millis() - operationStartTime > operationTimeout))
   {
     sendShortcodeResponse(S_ERROR, M_ERR_TIMEOUT);
+    showOledMessage("Timeout!", "Please retry."); // Update OLED
     currentState = IDLE;
+    delay(2000);
+    showOledMessage("Ready to Scan");
   }
 }
 
@@ -193,19 +232,10 @@ void sendBleNotification(const String &message)
   }
 }
 
-// --- Replaced ALL JSON functions with this single, efficient Shortcode function ---
 void sendShortcodeResponse(StatusCode status, MessageCode message, int dataValue)
 {
-  // Create a fixed-size character buffer.
-  // It MUST be size 8 (7 characters for data + 1 for the null terminator '\0').
   char buffer[8];
-
-  // Use sprintf to format the integers into the buffer with zero-padding.
-  // %02d = pad integer with leading zeros to 2 digits.
-  // %03d = pad integer with leading zeros to 3 digits.
   sprintf(buffer, "%02d%02d%03d", (int)status, (int)message, dataValue);
-
-  // Convert the C-style char buffer to an Arduino String object and send it.
   sendBleNotification(String(buffer));
 }
 
@@ -216,18 +246,25 @@ void handleCheckFinger()
   if (finger.image2Tz() != FINGERPRINT_OK)
   {
     sendShortcodeResponse(S_ERROR, M_ERR_IMAGE_PROCESS);
+    showOledMessage("Error", "Try again");
     currentState = IDLE;
+    delay(2000);
+    showOledMessage("Ready to Scan");
     return;
   }
   if (finger.fingerSearch() == FINGERPRINT_OK)
   {
     sendShortcodeResponse(S_SUCCESS, M_ACCESS_GRANTED, finger.fingerID);
+    showOledMessage("Access Granted!");
   }
   else
   {
     sendShortcodeResponse(S_FAILURE, M_FINGER_NOT_RECOGNIZED);
+    showOledMessage("Access Denied");
   }
   currentState = IDLE;
+  delay(2000); // Wait so user can see the message
+  showOledMessage("Ready to Scan");
 }
 
 void startEnrollment()
@@ -236,11 +273,15 @@ void startEnrollment()
   if (finger.templateCount >= finger.capacity)
   {
     sendShortcodeResponse(S_ERROR, M_ERR_DB_FULL);
+    showOledMessage("Database Full");
     currentState = IDLE;
+    delay(2000);
+    showOledMessage("Ready to Scan");
     return;
   }
   enrollId = finger.templateCount + 1;
   sendShortcodeResponse(S_PROMPT, M_ENROLLING_NEW_USER, enrollId);
+  showOledMessage("Enroll:", "Place Finger"); // Update OLED
   currentState = ENROLL_STEP_1;
   operationStartTime = millis();
 }
@@ -252,12 +293,16 @@ void handleEnrollment()
   if (finger.image2Tz(currentState == ENROLL_STEP_1 ? 1 : 2) != FINGERPRINT_OK)
   {
     sendShortcodeResponse(S_ERROR, M_ERR_IMAGE_PROCESS);
+    showOledMessage("Error", "Try Again");
     currentState = IDLE;
+    delay(2000);
+    showOledMessage("Ready to Scan");
     return;
   }
   if (currentState == ENROLL_STEP_1)
   {
     sendShortcodeResponse(S_PROMPT, M_REMOVE_FINGER);
+    showOledMessage("Remove Finger");
     currentState = ENROLL_WAIT_FOR_REMOVE;
     operationStartTime = millis();
   }
@@ -266,33 +311,42 @@ void handleEnrollment()
     if (finger.createModel() != FINGERPRINT_OK)
     {
       sendShortcodeResponse(S_ERROR, M_ERR_MISMATCH);
+      showOledMessage("Prints Don't", "Match. Retry.");
       currentState = IDLE;
-      return;
     }
-    if (finger.storeModel(enrollId) == FINGERPRINT_OK)
+    else if (finger.storeModel(enrollId) == FINGERPRINT_OK)
     {
       sendShortcodeResponse(S_SUCCESS, M_FINGERPRINT_STORED, enrollId);
+      showOledMessage("Success!", "Finger Stored");
     }
     else
     {
       sendShortcodeResponse(S_ERROR, M_ERR_STORE_FAILED);
+      showOledMessage("Error", "Storing Failed");
     }
     currentState = IDLE;
+    delay(2000);
+    showOledMessage("Ready to Scan");
   }
 }
 
 void handleFactoryReset()
 {
   Serial.println("Attempting to clear fingerprint database...");
+  showOledMessage("Clearing DB...");
   uint8_t result = finger.emptyDatabase();
   if (result == FINGERPRINT_OK)
   {
     sendShortcodeResponse(S_SUCCESS, M_DATABASE_CLEARED);
+    showOledMessage("Database Cleared");
     Serial.println("Database cleared successfully.");
   }
   else
   {
     sendShortcodeResponse(S_ERROR, M_ERR_DATABASE_CLEAR_FAILED);
+    showOledMessage("Clear Failed!");
     Serial.println("Failed to clear database.");
   }
+  delay(2000);
+  showOledMessage("Ready to Scan");
 }
